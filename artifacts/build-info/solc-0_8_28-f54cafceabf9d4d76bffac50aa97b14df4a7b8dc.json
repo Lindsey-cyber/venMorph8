@@ -1,0 +1,35 @@
+{
+  "_format": "hh3-sol-build-info-1",
+  "id": "solc-0_8_28-f54cafceabf9d4d76bffac50aa97b14df4a7b8dc",
+  "solcVersion": "0.8.28",
+  "solcLongVersion": "0.8.28+commit.7893614a",
+  "userSourceNameMap": {
+    "contracts/XRPLAttestation.sol": "project/contracts/XRPLAttestation.sol"
+  },
+  "input": {
+    "language": "Solidity",
+    "settings": {
+      "evmVersion": "cancun",
+      "outputSelection": {
+        "*": {
+          "": [
+            "ast"
+          ],
+          "*": [
+            "abi",
+            "evm.bytecode",
+            "evm.deployedBytecode",
+            "evm.methodIdentifiers",
+            "metadata"
+          ]
+        }
+      },
+      "remappings": []
+    },
+    "sources": {
+      "project/contracts/XRPLAttestation.sol": {
+        "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.19;\n\ninterface IFdcHub {\n    function verifyAttestation(bytes32 _txHash) external view returns (bool);\n}\n\ncontract XRPLAttestation {\n    address public fdcHub; // Flare FDC Hub 合约地址\n    mapping(bytes32 => bool) public attested;\n\n    constructor(address _fdcHub) {\n        fdcHub = _fdcHub;\n    }\n\n    function verifyXRPLPayment(bytes32 txHash) public returns (bool) {\n        IFdcHub hub = IFdcHub(fdcHub);\n        bool result = hub.verifyAttestation(txHash);\n        if (result) {\n            attested[txHash] = true;\n        }\n        return result;\n    }\n\n    function isAttested(bytes32 txHash) public view returns (bool) {\n        return attested[txHash];\n    }\n}\n"
+      }
+    }
+  }
+}
