@@ -1,0 +1,23 @@
+{
+  "name": "venmo-mvp",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.1.0",
+    "hardhat": "^2.26.3"
+  },
+  "dependencies": {
+    "@flarenetwork/flare-periphery-contract-artifacts": "^0.1.35",
+    "dotenv": "^17.2.2",
+    "ethers": "^6.15.0",
+    "node-fetch": "^3.3.2"
+  }
+}

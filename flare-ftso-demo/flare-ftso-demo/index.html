@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <title>GemWallet + Flare Attestation Demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://unpkg.com/@gemwallet/api@3.8.0/umd/gemwallet-api.js"></script>
+  <style>
+    body { font-family: system-ui; padding: 18px; }
+    button { padding: 8px 12px; margin-top: 12px; }
+    #gemInfo { margin-top: 12px; }
+    pre { background: #f5f5f5; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h3>GemWallet 调试 & 支付 Demo</h3>
+
+  <button id="connectGemBtn">连接 GemWallet</button>
+  <button id="payBtn" disabled>支付 1 XRP 给 Project</button>
+
+  <div id="gemInfo"></div>
+
+<script>
+const gemBtn = document.getElementById('connectGemBtn');
+const payBtn = document.getElementById('payBtn');
+const gemInfo = document.getElementById('gemInfo');
+
+let GemWalletApi = null;
+let userAddress = null;
+
+// 等待 GemWalletApi 注入
+function waitForGemApi(timeout = 5000) {
+  if (window.GemWalletApi) return Promise.resolve(window.GemWalletApi);
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const timer = setInterval(() => {
+      if (window.GemWalletApi) {
+        clearInterval(timer);
+        resolve(window.GemWalletApi);
+      } else if (Date.now() - start > timeout) {
+        clearInterval(timer);
+        reject(new Error('timeout — GemWalletApi 未被注入'));
+      }
+    }, 100);
+  });
+}
+
+// 连接 GemWallet
+gemBtn.addEventListener('click', async () => {
+  gemInfo.textContent = '检测 GemWallet...';
+  try {
+    GemWalletApi = await waitForGemApi(5000);
+
+    const installedResp = await GemWalletApi.isInstalled();
+    if (!installedResp?.result?.isInstalled) {
+      gemInfo.innerHTML = '❌ GemWallet 未安装或未启用';
+      return;
+    }
+
+    const addrResp = await GemWalletApi.getAddress();
+    if (addrResp?.type === 'response' && addrResp.result?.address) {
+      userAddress = addrResp.result.address;
+      const netResp = await GemWalletApi.getNetwork();
+      const network = netResp?.type === 'response' ? netResp.result?.network : '未知';
+
+      gemInfo.innerHTML = `
+        ✅ 已连接<br>
+        <p><strong>地址：</strong><code>${userAddress}</code></p>
+        <p><strong>网络：</strong><code>${network}</code></p>
+      `;
+      payBtn.disabled = false;
+    } else {
+      gemInfo.textContent = '❌ 未能获取地址';
+    }
+  } catch (err) {
+    gemInfo.textContent = `调用出错：${err.message || err}`;
+  }
+});
+
+// 发起支付
+payBtn.addEventListener('click', async () => {
+  if (!GemWalletApi || !userAddress) {
+    alert('请先连接 GemWallet');
+    return;
+  }
+  try {
+    gemInfo.innerHTML += `<p>📤 正在请求支付...</p>`;
+
+    const resp = await GemWalletApi.sendPayment({
+      amount: "1000000", // 1 XRP (drops)
+      destination: "rGFTehMJDrxuyt6DvjczCdf6RpAr4WvdTn"
+    });
+
+    console.log("sendPayment response:", resp);
+
+    if (resp?.type === "response") {
+      const txHash = resp.result?.hash;
+      gemInfo.innerHTML += `<p>✅ 支付成功！<br>交易哈希：<code>${txHash}</code></p>`;
+
+      // === 新增：调用后端 attestation API ===
+      try {
+        const attResp = await fetch("http://localhost:3001/api/attest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            requestId: "req_" + Date.now(),
+            xrplTxHash: txHash,
+            requesterAddress: userAddress,
+            note: "demo request"
+          })
+        });
+        const result = await attResp.text();
+        gemInfo.innerHTML += `<p>📡 已发送 attestation 请求<br><pre>${result}</pre></p>`;
+      } catch (err) {
+        gemInfo.innerHTML += `<p>⚠️ 调用 /api/attest 出错：${err.message}</p>`;
+      }
+    } else if (resp?.type === "reject") {
+      gemInfo.innerHTML += `<p>❌ 用户拒绝支付</p>`;
+    } else {
+      gemInfo.innerHTML += `<p>⚠️ 未知响应：${JSON.stringify(resp)}</p>`;
+    }
+  } catch (err) {
+    gemInfo.innerHTML += `<p>❌ 支付出错：${err.message || err}</p>`;
+  }
+});
+</script>
+</body>
+</html>

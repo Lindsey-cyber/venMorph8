@@ -1,0 +1,21 @@
+{
+  "name": "flare-ftso-demo",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@flarenetwork/flare-periphery-contract-artifacts": "^0.1.35",
+    "cors": "^2.8.5",
+    "ethers": "^6.15.0",
+    "express": "^5.1.0",
+    "web3": "^4.16.0"
+  },
+  "description": ""
+}
