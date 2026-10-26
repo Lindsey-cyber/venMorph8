@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <title>GemWallet 调试（xrpl.js + WebSocket 后备）</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- GemWallet API -->
+  <script src="https://unpkg.com/@gemwallet/api@3.8.0/umd/gemwallet-api.js"></script>
+  <!-- xrpl.js (浏览器版) -->
+  <script src="https://unpkg.com/xrpl@latest/build/xrpl-latest-min.js"></script>
+
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; padding: 18px; }
+    button { padding: 8px 12px; margin-top: 12px; margin-right: 8px; }
+    #gemInfo { margin-top: 12px; white-space: pre-wrap; }
+    pre { background: #f5f5f5; padding: 8px; overflow:auto; max-height:320px; }
+    .mono { font-family: monospace; font-size: 13px; display:block; word-break:break-all; }
+    .ok { color: #0a0; }
+    .warn { color: #b66; }
+  </style>
+</head>
+<body>
+  <h3>GemWallet 调试（xrpl.js + WebSocket 后备）</h3>
+
+  <button id="connectGemBtn">连接 GemWallet</button>
+  <button id="payBtn" disabled>支付 1 XRP 给 Project</button>
+  <button id="balanceBtn" disabled>查看钱包余额（调试）</button>
+
+  <div id="gemInfo"></div>
+
+<script>
+const gemBtn = document.getElementById('connectGemBtn');
+const payBtn = document.getElementById('payBtn');
+const balanceBtn = document.getElementById('balanceBtn');
+const gemInfo = document.getElementById('gemInfo');
+
+let GemWalletApi = null;
+let userAddress = null;
+let network = null;
+
+// helper: safe stringify that marks functions
+function safeStringify(obj, spaces = 2) {
+  const cache = new Set();
+  return JSON.stringify(obj, function(key, value) {
+    if (typeof value === 'function') return `[Function: ${value.name || 'anonymous'}]`;
+    if (typeof value === 'object' && value !== null) {
+      if (cache.has(value)) return '[Circular]';
+      cache.add(value);
+    }
+    return value;
+  }, spaces);
+}
+
+// wait for injection
+function waitForGemApi(timeout = 5000) {
+  if (window.GemWalletApi) return Promise.resolve(window.GemWalletApi);
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const timer = setInterval(() => {
+      if (window.GemWalletApi) {
+        clearInterval(timer);
+        resolve(window.GemWalletApi);
+      } else if (Date.now() - start > timeout) {
+        clearInterval(timer);
+        reject(new Error('timeout — GemWalletApi 未被注入'));
+      }
+    }, 100);
+  });
+}
+
+// connect
+gemBtn.addEventListener('click', async () => {
+  gemInfo.innerHTML = '检测 GemWallet...<br/>';
+  try {
+    GemWalletApi = await waitForGemApi(5000);
+
+    const installedResp = await GemWalletApi.isInstalled?.();
+    if (!installedResp?.result?.isInstalled && installedResp !== true && !installedResp) {
+      gemInfo.innerHTML += '<span class="warn">❌ GemWallet 未安装或未启用</span>';
+      return;
+    }
+
+    const addrResp = await GemWalletApi.getAddress?.();
+    if (addrResp?.type === 'response' && addrResp.result?.address) {
+      userAddress = addrResp.result.address;
+      const netResp = await GemWalletApi.getNetwork?.();
+      network = netResp?.type === 'response' ? netResp.result?.network : (typeof netResp === 'string' ? netResp : '未知');
+
+      gemInfo.innerHTML = `
+        <span class="ok">✅ 已连接</span><br>
+        <p><strong>地址：</strong><code class="mono">${userAddress}</code></p>
+        <p><strong>网络：</strong><code class="mono">${network}</code></p>
+        <p>控制台也会输出大量调试信息（按 F12 打开 devtools）。</p>
+      `;
+      payBtn.disabled = false;
+      balanceBtn.disabled = false;
+    } else {
+      gemInfo.innerHTML = '<span class="warn">❌ 未能获取地址</span>';
+    }
+  } catch (err) {
+    gemInfo.innerHTML = `调用出错：${err.message || err}`;
+    console.error(err);
+  }
+});
+
+// 保留原支付按钮逻辑
+payBtn.addEventListener('click', async () => {
+  if (!GemWalletApi || !userAddress) {
+    alert('请先连接 GemWallet');
+    return;
+  }
+  try {
+    gemInfo.innerHTML += `<p>📤 正在请求支付...</p>`;
+    const resp = await GemWalletApi.sendPayment({
+      amount: "1000000", // 1 XRP (drops)
+      destination: "rQsBxmG13zaU9kT4LJ1V9cyzRKCor2X2Nv"
+    });
+    console.log("sendPayment response:", resp);
+    if (resp?.type === "response") {
+      const txHash = resp.result?.hash;
+      gemInfo.innerHTML += `<p class="ok">✅ 支付成功！<br>交易哈希：<code class="mono">${txHash}</code></p>`;
+    } else if (resp?.type === "reject") {
+      gemInfo.innerHTML += `<p class="warn">❌ 用户拒绝支付</p>`;
+    } else {
+      gemInfo.innerHTML += `<p>⚠️ 未知响应：${safeStringify(resp)}</p>`;
+    }
+  } catch (err) {
+    gemInfo.innerHTML += `<p class="warn">❌ 支付出错：${err.message || err}</p>`;
+    console.error(err);
+  }
+});
+
+/**
+ * XRPL via xrpl.js (WebSocket)
+ * - endpoints: 官方 testnet websocket (port 51233), fallback xrpl-labs testnet
+ * - 参考：XRPL public servers & docs
+ */
+async function fetchBalancesViaWebsocket(address) {
+  // endpoints to try (优先官方 testnet wss with port)
+  const endpoints = [
+    'wss://s.altnet.rippletest.net:51233/',   // 官方 Testnet websocket（常见带端口）
+    'wss://s.altnet.rippletest.net/',         // 有时可尝试不带端口
+    'wss://testnet.xrpl-labs.com/'            // XRPL-Labs 提供的 testnet endpoint（备用）
+  ];
+
+  let lastError = null;
+  for (const ep of endpoints) {
+    try {
+      console.log('尝试连接 XRPL endpoint:', ep);
+      gemInfo.innerHTML += `<p>尝试连接 XRPL: <code class="mono">${ep}</code> ...</p>`;
+
+      // xrpl.js 在浏览器以全局 xrpl 提供 Client
+      const client = new xrpl.Client(ep);
+      await client.connect();
+      gemInfo.innerHTML += `<p class="ok">已连接到：<code class="mono">${ep}</code></p>`;
+
+      // account_info (XRP balance in drops)
+      const acctInfo = await client.request({
+        command: 'account_info',
+        account: address,
+        ledger_index: 'validated'
+      });
+      console.log('account_info raw:', acctInfo);
+      gemInfo.innerHTML += `<h4>XRPL account_info 原始返回（${ep}）</h4><pre>${safeStringify(acctInfo,2)}</pre>`;
+
+      // account_lines (trustlines / IOUs)
+      const acctLines = await client.request({
+        command: 'account_lines',
+        account: address,
+        ledger_index: 'validated'
+      });
+      console.log('account_lines raw:', acctLines);
+      gemInfo.innerHTML += `<h4>XRPL account_lines 原始返回（${ep}）</h4><pre>${safeStringify(acctLines,2)}</pre>`;
+
+      // 解析并展示友好余额
+      const acctData = acctInfo?.result?.account_data || acctInfo?.account_data || null;
+      let parsedHtml = '<h4>解析后余额（来自 XRPL）</h4><ul>';
+      if (acctData) {
+        const drops = acctData?.Balance ?? acctData?.balance ?? null;
+        if (drops != null) {
+          const xrpVal = Number(drops) / 1_000_000;
+          parsedHtml += `<li><strong>XRP：</strong> ${xrpVal} XRP (${drops} drops)</li>`;
+        } else {
+          parsedHtml += `<li><strong>XRP：</strong> 未在 account_info 中找到 Balance 字段</li>`;
+        }
+      } else {
+        parsedHtml += `<li><strong>account_info 未返回 account_data（账户可能未激活/未上链）</strong></li>`;
+      }
+
+      const lines = acctLines?.result?.lines || acctLines?.lines || [];
+      if (Array.isArray(lines) && lines.length > 0) {
+        parsedHtml += `<li><strong>信任线 / 代币 (${lines.length})：</strong><ul>`;
+        lines.forEach(l => {
+          parsedHtml += `<li>${l.balance} ${l.currency} — issuer: ${l.account || l.peer || l.issuer || 'unknown'} (limit: ${l.limit})</li>`;
+        });
+        parsedHtml += `</ul></li>`;
+      } else {
+        parsedHtml += `<li><strong>无信任线信息（account_lines 返回为空）</strong></li>`;
+      }
+      parsedHtml += '</ul>';
+      gemInfo.innerHTML += parsedHtml;
+
+      try { await client.disconnect(); } catch(e) { console.warn('disconnect error', e); }
+
+      // 成功则返回原始数据用于外部进一步处理
+      return { acctInfo, acctLines, endpoint: ep };
+    } catch (err) {
+      console.warn('连接或请求失败（endpoint：' + ep + '）', err);
+      gemInfo.innerHTML += `<p class="warn">无法连接或请求失败（${ep}）：${err.message || err}</p>`;
+      lastError = err;
+      // 尝试下一个 endpoint
+    }
+  }
+
+  // 全部 endpoint 都失败 -> 抛错，提示用户使用后端代理或检查网络/防火墙
+  throw new Error('无法连接到任何 XRPL websocket endpoint。最后错误：' + (lastError?.message || lastError || 'unknown'));
+}
+
+// 主要：详细调试并打印所有信息（保留 GemWallet 对象 dump）
+balanceBtn.addEventListener('click', async () => {
+  if (!GemWalletApi || !userAddress) {
+    alert('请先连接 GemWallet');
+    return;
+  }
+
+  gemInfo.innerHTML += `<p>📊 调试开始 — 页面 & 控制台将打印大量原始信息（请打开 DevTools 查看 console）...</p>`;
+
+  try {
+    // 1) 基本对象 / 方法结构 dump（页面 + 控制台）
+    console.groupCollapsed('GemWalletApi — object dump');
+    console.log('window.GemWalletApi (完整对象):', window.GemWalletApi);
+    console.dir(window.GemWalletApi);
+    const ownProps = Object.getOwnPropertyNames(GemWalletApi || {});
+    console.log('own property names:', ownProps);
+    const summary = ownProps.map(k => {
+      const v = GemWalletApi[k];
+      return { name: k, type: typeof v, isFunction: typeof v === 'function', length: (typeof v === 'function' ? v.length : '-') };
+    });
+    console.table(summary);
+    console.groupEnd();
+
+    gemInfo.innerHTML += `<h4>GemWalletApi 概览（只列出属性名）</h4><pre>${safeStringify(ownProps)}</pre>`;
+
+    // 2) 搜索包含 "balance"/"balances"/"account" 的方法名
+    const candidates = ownProps.filter(k => /balance|balances|account/i.test(k));
+    gemInfo.innerHTML += `<p>🔎 在 GemWalletApi 中搜索到可能相关的方法： <code>${candidates.join(', ') || '无'}</code></p>`;
+    console.log('候选方法（包含 balance/account 关键字）:', candidates);
+
+    // 3) 如果存在 getBalances，尝试调用（但你之前已看到通常不存在）
+    if (typeof GemWalletApi.getBalances === 'function') {
+      gemInfo.innerHTML += `<p>➡️ 调用 GemWalletApi.getBalances() 并打印返回（如果需要钱包确认，你需要在扩展中允许）</p>`;
+      try {
+        const gb = await GemWalletApi.getBalances();
+        console.log('getBalances response:', gb);
+        gemInfo.innerHTML += `<h4>getBalances 原始返回：</h4><pre>${safeStringify(gb)}</pre>`;
+      } catch (err) {
+        console.error('getBalances 调用出错：', err);
+        gemInfo.innerHTML += `<pre>getBalances 调用出错：${err.message || err}</pre>`;
+      }
+    } else {
+      gemInfo.innerHTML += `<p class="warn">⚠️ GemWalletApi.getBalances 不存在（typeof：${typeof GemWalletApi.getBalances}）。将使用 xrpl.js (WebSocket) 作为后备直接查询账本。</p>`;
+      console.warn('getBalances not found on GemWalletApi');
+    }
+
+    // 4) 后备：使用 xrpl.js WebSocket 读取 balance（避免 fetch 的 CORS）
+    gemInfo.innerHTML += `<p>🔁 使用 xrpl.js WebSocket 后备查询（避免 HTTP CORS 问题）。</p>`;
+    try {
+      await fetchBalancesViaWebsocket(userAddress);
+      gemInfo.innerHTML += `<p class="ok">✅ XRPL 查询完成（详见上方原始返回与解析结果）</p>`;
+    } catch (wsErr) {
+      console.error('WebSocket 查询失败：', wsErr);
+      gemInfo.innerHTML += `<pre class="warn">WebSocket 查询失败：${wsErr.message || wsErr}\n建议：检查网络/防火墙/端口，或使用后端代理去请求 JSON-RPC。</pre>`;
+    }
+
+    gemInfo.innerHTML += `<p>完成：调试信息也写入 console（建议打开 DevTools 查看更友好的结构化输出）。</p>`;
+
+  } catch (err) {
+    console.error('调试过程中发生错误：', err);
+    gemInfo.innerHTML += `<pre>调试过程中发生错误：${err.message || err}</pre>`;
+  }
+});
+</script>
+</body>
+</html>
